@@ -187,6 +187,8 @@ for i_1 in range(len(numerical_cols)):
                 x = egonets[c]
                 hist, edges = np.histogram(x, bins=100)
                 plt.plot(edges[0:-1], np.log(hist))
+                plt.xlabel(c)
+                plt.ylabel("log count of {}".format(c))
                 savestring = folder+c+".png"
                 plt.savefig(savestring)
                 plt.close()
