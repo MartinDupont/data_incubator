@@ -1,21 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Jul 21 13:04:18 2018
+This code reads through a database of academic papers and constructs a
+graph of academics who are connected by coautorship relations and citations. 
 
-@author: martin
+I create a selection of features, following the ideas put forward in:
+https://www.andrew.cmu.edu/user/lakoglu/icdm12/ICDM12-Tutorial%20-%20PartI.pdf
+The features measure traits related to the connectivity of each node. 
+We then plot these features against each other, and try and find outliers. 
+These outliers are those that have something unusual about the way they have 
+been cited.
+
+Code can be slow and resource-heavy. 
 """
 from collections import defaultdict
 import copy
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import time
 
 class BaseNode:
     pass
 
 class PaperNode(BaseNode):
     def __init__(self, paper_id):
-        
         self.paperid = paper_id
         self.cited_by = set() # list of strings
         self.cites = set()
@@ -25,108 +33,114 @@ class AuthorNode(BaseNode):
     def __init__(self, author):
         self.author_name = author
         self.coauthors = set()
-        self.papers = set()
+        self.n_papers = 0
+        self.cited_by = set()
+        self.cites = set()
+        
+    @property
+    def bidirectional_citations(self):
+        return  (self.cited_by | self.cites)
+
+
 
 # =========================================================================== #
 #               Read in Data and Construct Academic Graph
 # =========================================================================== #
 
-paper_id_dict = {}
-author_name_dict = {}
+paper_tree = {}
+author_tree = {}
+max_len = 900000
+#t 
 with open("AMiner-Paper.txt", "r", encoding = "utf-8") as file:
-    count = 0
     buffer = defaultdict(list)
-    for line in file:
+    while len(author_tree) < max_len:
+        line = file.readline()
         if line == "\n":
             continue
         thing = line.strip().split(" ")
         tag = thing[0]
-        #print(line.strip().split(" "))
-
- 
+        
         # We add lines into a buffer until we reach a new node, then we process
         # and reset the buffer. 
         if tag == "#index" and buffer:
             p_id = buffer["#index"][0]
             p_node = PaperNode(p_id)
             p_node.cites = set(buffer["#%"])
-            paper_id_dict[p_id] = p_node
+            paper_tree[p_id] = p_node
             authors = set(buffer["#@"][0].split(";"))
+            authors.discard("") # trouble caused by split()
             p_node.authors = authors
             for a in authors:
                 not_me = {b for b in authors if not(b == a)}
-                if a in author_name_dict:
-                    a_node = author_name_dict[a]
+                if a in author_tree:
+                    a_node = author_tree[a]
                     a_node.coauthors.update(not_me)
-                    a_node.papers.add(p_id)
+                    #a_node.papers.add(p_id)
                 else:                   
                     a_node = AuthorNode(a)
                     a_node.coauthors = not_me
-                    a_node.papers.add(p_id)
-                    author_name_dict[a] = a_node
+                    #a_node.papers.add(p_id)
+                    author_tree[a] = a_node
             buffer = defaultdict(list)
  
         buffer[tag] += [" ".join(thing[1:])]
-        count += 1
-        if count > 5000000:
-            break
-        
-# consolidate papers, complete all the edges by adding in a cited_by, 
-# and also adding in papers that are cited, but weren't read in. 
-thing = copy.deepcopy(list(paper_id_dict.keys()))
+   
+print("Number of papers read in: {}".format(len(paper_tree))) 
+print("Number of Authors: {}".format(len(author_tree)))      
+# consolidate Authors, complete all the edges by adding in a cited_by, and 
+# cites relationsip. 
+thing = copy.deepcopy(list(paper_tree.keys()))
+# making a deepcopy because you can't modify a dictionary that you're iterating over.
+# making a deepcopy of just the keys because i don't want to double the tree,
+# that would kill my memory requirements.
 for p_id in thing:
-    node = paper_id_dict[p_id]
+    node = paper_tree[p_id]
+    a_nodes = [author_tree[n_a] for n_a in node.authors]
+    for a_n in a_nodes:
+        a_n.n_papers += 1 # should see if I can rearrange these loops
     for i in node.cites:
-        if not(i in paper_id_dict):
-            p_node = PaperNode(i)
-            paper_id_dict[i] = p_node
-        else:
-            p_node = paper_id_dict[i]
-        p_node.cited_by.add(i)
-    
+        if i in paper_tree: # some papers cite other papers which were not read in
+            cited_authors = paper_tree[i].authors
+            for a_n in a_nodes:
+                #a_n.cites.update(cited_authors)
+                for c in cited_authors:
+                    if a_n.author_name != c:
+                        c_node = author_tree[c]
+                        c_node.cited_by.add(a_n.author_name)
+                        a_n.cites.add(c)
+
 thing = None
-
-# building a citations/citation by graph amongst the authors, derived from the
-# paper citations. 
-# Allows for easier searchinng.
-for author, a_node in author_name_dict.items():
-    a_node.cited_by = set()
-    a_node.cites = set()
-    for paper_id in a_node.papers:
-        paper = paper_id_dict[paper_id]
-        for p_id in paper.cited_by:
-            p_node = paper_id_dict[p_id]
-            authors_cited_by = p_node.authors
-            a_node.cited_by.update(iter(authors_cited_by))
-            
-        for p_id in paper.cites:
-            p_node = paper_id_dict[p_id]
-            authors_cited = p_node.authors
-            a_node.cites.update(iter(authors_cited))
-    
-    a_node.bidirectional_edges = (a_node.cites | a_node.cited_by)
-    
-
+paper_tree = None
+print("Finished building academic tree")
 # =========================================================================== #
 #                           Begin Data Analysis
 # =========================================================================== #
 all_attributes = []
-for author, a_node in author_name_dict.items():
-    co_authors = set(a_node.coauthors)
+count = 1
+t = time.time()
+for author, a_node in author_tree.items():
+    if count % 1000 == 0:
+        print("processing {}-th author ".format(count))
     
     #build coauthorship egonet
+    co_authors = a_node.coauthors
     n_edges_coauthors = len(a_node.coauthors)
-    for a in a_node.coauthors:
-        for c in author_name_dict[a].coauthors:
-            if (c in a_node.coauthors) and (c != a) and (c != author):
-                n_edges_coauthors +=1
+    for a in co_authors:
+        new_edges = (co_authors & author_tree[a].coauthors)
+        n_edges_coauthors += len(new_edges)
+#        for c in author_tree[a].coauthors:
+#            if (c in a_node.coauthors) and (c != author):
+#                n_edges_coauthors +=1
                 
     #build citation egonet
-    n_edges_citations = len(a_node.bidirectional_edges)       
-    for a in (a_node.bidirectional_edges):
-        for c in author_name_dict[a].bidirectional_edges:
-            if (c in a_node.bidirectional_edges) and (c != a) and (c != author):
-                n_edges_citations +=1
+    n_edges_citations = len(a_node.bidirectional_citations)       
+    for a in (a_node.bidirectional_citations):
+        a_neighbours = author_tree[a].bidirectional_citations
+        new_edges = (a_neighbours & a_node.bidirectional_citations)
+        n_edges_citations += len(new_edges)
+#        for c in author_tree[a].bidirectional_citations:
+#            if (c in a_node.bidirectional_citations) and (c != a) and (c != author):
+#                n_edges_citations +=1
     
     if len(a_node.cited_by) != 0: 
         score_citers =  len(a_node.cited_by & co_authors) / len(a_node.cited_by) 
@@ -141,17 +155,20 @@ for author, a_node in author_name_dict.items():
     if (len(a_node.cited_by) + len(a_node.cites)) == 0:
         citer_citee_ratio = 0
     else:
-        citer_citee_ratio = len(a_node.cited_by & a_node.cites) / len(a_node.bidirectional_edges)
+        citer_citee_ratio = len(a_node.cited_by & a_node.cites) / len(a_node.bidirectional_citations)
 
     all_attributes += [{"author":author, "N_citations":len(a_node.cited_by), "N_citees":len(a_node.cites),
                         "citations_ratio":score_citers, "citees_ratio":score_citees,
-                        "N_papers":len(a_node.papers), "citer_citee_ratio":citer_citee_ratio,
-                        "N_edges_coauthor_egonet":n_edges_coauthors, "n_coauthors":len(a_node.coauthors),
-                        "N_bidirectional_cites":len(a_node.bidirectional_edges),
+                        "N_papers":a_node.n_papers, "citer_citee_ratio":citer_citee_ratio,
+                        "N_edges_coauthor_egonet":n_edges_coauthors, "N_coauthors":len(a_node.coauthors),
+                        "N_bidirectional_cites":len(a_node.bidirectional_citations),
                         "N_edges_citation_egonet":n_edges_citations}]
+    count += 1
  
-egonets = pd.DataFrame(all_attributes)    
-egonets = egonets[egonets["author"] != ""]
+diff = time.time()- t
+print("Data processing time: {}".format(diff))
+egonets = pd.DataFrame(all_attributes)  
+#egonets = egonets[egonets["author"] != ""]
 
 # =========================================================================== #
 #                          Begin Making Plots

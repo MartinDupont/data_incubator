@@ -1,3 +1,6 @@
 *.txt
 *.png
 *.csv
+
+!citation_connectivity.png
+!coauthorship_connectivity.png
